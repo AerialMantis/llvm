@@ -1,0 +1,322 @@
+= sycl_ext_oneapi_address_space_pointer
+
+:source-highlighter: coderay
+:coderay-linenums-mode: table
+
+// This section needs to be after the document title.
+:doctype: book
+:toc2:
+:toc: left
+:encoding: utf-8
+:lang: en
+:dpcpp: pass:[DPC++]
+
+// Set the default source code type in this document to C++,
+// for syntax highlighting purposes.  This is needed because
+// docbook uses c++ and html5 uses cpp.
+:language: {basebackend@docbook:c++:cpp}
+
+
+== Notice
+
+[%hardbreaks]
+Copyright (C) 2024 Intel Corporation.  All rights reserved.
+
+Khronos(R) is a registered trademark and SYCL(TM) and SPIR(TM) are trademarks
+of The Khronos Group Inc.  OpenCL(TM) is a trademark of Apple Inc. used by
+permission by Khronos.
+
+
+== Contact
+
+To report problems with this extension, please open a new issue at:
+
+https://github.com/intel/llvm/issues
+
+
+== Dependencies
+
+This extension is written against the SYCL 2020 revision 8 specification.  All
+references below to the "core SYCL specification" or to section numbers in the
+SYCL specification refer to that revision.
+
+This extension also depends on the following other SYCL extensions:
+
+* link:../experimental/sycl_ext_oneapi_annotated_ptr.asciidoc[
+  sycl_ext_oneapi_annotated_ptr]
+* link:../experimental/sycl_ext_oneapi_properties.asciidoc[
+  sycl_ext_oneapi_properties]
+
+
+== Status
+
+This is a proposed extension specification, intended to gather community
+feedback.  Interfaces defined in this specification may not be implemented yet
+or may be in a preliminary state.  The specification itself may also change in
+incompatible ways before it is finalized.  *Shipping software products should
+not rely on APIs defined in this specification.*
+
+
+== Backend support status
+
+This extension is not yet implemented.
+
+== Overview
+
+The `multi_ptr` class is used to associate an address space with a pointer and
+have that represented as a C++ type. This allows allows users infer the address
+space of memory a pointer is adressing and allows functions to be overloaded or
+classes to be specialised on the address space of a pointer, without relying on
+implementation details.
+
+The `multi_ptr` class has an `access::decorated` template parameter for
+specifying whether the underlying pointer retrieved from it will be decorated
+with the address space or not. In the SYCL 2020 specification this template
+parameter is defaulted to `access::decorated::legacy` which assumes the
+behaviour from SYCL 1.2.1. However, this introduces a problem as moving forward
+this default cannot be changed without an API break, and potentially an ABI
+break in implementations.
+
+This extension introduces an alternative interface to that which is currently
+provided by the `multi_ptr` class. The new interfaces consist of a compile-time
+property for the `annotated_ptr` class which adds an address-space qualifier to
+the underlying pointer type as well as a free function which takes an
+`annotated_ptr` and returns a decorated raw pointer.
+
+This extension also introduces new overlaods to functions and member functions
+which currently take a `multi_ptr` to instead take the equivalent
+`annotated_ptr`.
+
+== Specification
+
+=== Feature test macro
+
+This extension provides a feature-test macro as described in the core SYCL
+specification.  An implementation supporting this extension must predefine the
+macro `SYCL_EXT_ONEAPI_ADDRESS_SPACE_POINTER` to one of the values defined in
+the table below.  Applications can test for the existence of this macro to
+determine if the implementation supports this feature, or applications can test
+the macro's value to determine which of the extension's features the
+implementation supports.
+
+[%header,cols="1,5"]
+|===
+|Value
+|Description
+
+|1
+|The APIs of this experimental extension are not versioned, so the
+ feature-test macro always has this value.
+|===
+
+
+=== Address space property
+
+The `address_space` property is a compile-time property which can be used with
+when constructing an `annotated_ptr` or `annotated_ref` to qualify the
+underlying pointer or reference with a particular address space.
+
+[source,c++]
+----
+namespace sycl::ext::oneapi::experimental {
+
+  struct address_space_key {
+    template<int K>
+    using value_t = property_value<foo,
+      std::integral_constant<access::address_space, K>>;
+  };
+
+  template<int K>
+  inline constexpr address_space::value_t<K> address_space;
+
+  template<>
+  struct is_property_key<address_space_key> : std::true_type {};
+
+  struct is_property_key_of<address_space_key, annotated_ptr> : std::true_type {};
+  struct is_property_key_of<address_space_key, annotated_ref> : std::true_type {};
+
+} // namespace sycl::ext::oneapi::experimental
+----
+
+The value of the `address_space` property is a value of the enum class
+`access::address_space`, and can be any value within the enum class except for
+`access::address_space::constant_space`.
+
+
+=== Clarification to the annotated pointers & references
+
+When an `annotated_ptr` or `annotated_ref` has the `address_space` property the 
+underlying pointer or reference must be to memory in the address space
+specified by the value of the property.
+
+When an `annotated_ptr` or `annotated_ref` does not have the `address_space`
+property the underlying pointer or reference must be to memory in the generic
+address space.
+
+When an `annotated_ptr` or `annotated_ref` has the `address_space` property
+any member functions, including special member functions, which return either
+an `annotated_ptr` or `annotated_ref` must return an instance which also has
+the same `address_space` property.
+
+
+=== Retrieving a decorated pointer
+
+A new free function is introduced which will take an `annotated_ptr` with the
+`address_space` property and return the underlying pointer as raw pointer with
+the address space decoration. This function is contraint to `annotated_ptr`
+with the `address_space` property.
+
+The exact type of the decorated pointer is unspecified and may vary between
+implementations.
+
+[source,c++]
+----
+namespace sycl::ext::oneapi::experimental {
+
+  template <typename T, typename... PropertyList>
+  __unspecified__* get_decorated_ptr(annotated_ptr<T, PropertyList> ptr);
+
+} // namespace sycl::ext::oneapi::experimental
+----
+
+_Constraints_: Only available when `PropertyList` contains the `address_space`
+property.
+
+_Returns_: Returns a raw pointer decorated with an implementation defined
+address space qualifier.
+
+
+=== Retrieving an annotated pointer from an accessor
+
+A new member function is introduced to the `accessor` and `local_accessor`
+classes to retrieve an `annotated_ptr` with the `address_space` property,
+similar to the existing `get_multi_ptr` member functions.
+
+[source,c++]
+----
+class accessor {
+
+  annotated_ptr<value_type,
+    properties<address_space<access::adress_space::global_space>>>
+  ext_oneapi_get_multi_ptr() const noexcept;
+
+}; // accessor
+----
+
+_Constraints_: Only available when `AccessTarget` is `target::device`.
+
+_Returns_: An `annotated_ptr` with the `address_space` property of value
+`access::address_space::global_space`.
+
+[source,c++]
+----
+class local_accessor {
+
+  annotated_ptr<value_type,
+    properties<address_space<access::adress_space::local_space>>>
+  ext_oneapi_get_multi_ptr() const noexcept;
+
+}; // local_accessor
+----
+
+_Returns_: An `annotated_ptr` with the `address_space` property of value
+`access::address_space::local_space`.
+
+
+=== New function overloads
+
+New overloads to existing functions and member functions which take a
+`multi_ptr` are introduced which take an `annotated_ptr`. These functions are
+contraint to `annotated_ptr` with the `address_space` property.
+
+[source,c++]
+----
+namespace sycl::ext::oneapi::experimental {
+
+  template <typename DestDataT, typename SrcDataT, typename DestProperties,
+    typename SrcProperties>
+  device_event async_work_group_copy(
+    annotated_ptr<DestDataT, DestProperties> dest,
+    annotated_ptr<SrcDataT, SrcProperties> src,
+    size_t numElements) const; // (1)
+
+  template <typename DestDataT, typename SrcDataT, typename DestProperties,
+    typename SrcProperties>
+  device_event async_work_group_copy(
+    annotated_ptr<DestDataT, DestProperties> dest,
+    annotated_ptr<SrcDataT, SrcProperties> src, size_t numElements,
+    size_t srcStride) const; // (2)
+
+} // namespace sycl::ext::oneapi::experimental
+----
+
+_Constraints_: Only available when `DestDataT` and `SrcDataT` are the same type
+removing any const qualifiers, and `DestProperties` and `SrcProperties` both
+contain the `address_space` property with the value
+`access::address_space::global_space` or `access::address_space::local_space`.
+Furthermore, if the value of the `address_space` property in `DestProperties` is
+`access::address_space::global_space` then the value of the `address_space`
+property in `SrcProperties` must be `access::address_space::local_space` and
+vice versa.
+
+_Effects_: Equivalent to the `async_work_group_copy` taking a `multi_ptr`.
+
+_Returns_: A `device_event` which can be used to aysnchornise with the
+asynchronous copy.
+
+[source,c++]
+----
+class vec {
+
+  template <typename Properties>
+  void load(size_t offset, annotated_ptr<const DataT, Properties> ptr); // (1)
+
+  template <typename Properties>
+  void store(size_t offset,
+    annotated_ptr<const DataT, Properties> ptr) const; // (2)
+
+}; // vec
+----
+
+_Effects_: Equivalent to the `load` and `store` taking a `multi_ptr`.
+
+
+=== Using annotated pointer in math functions
+
+All math functions which have an overload which takes a `multi_ptr` will now
+also have an overload which takes an `annotated_ptr` with the `address_space`
+property in place of the address space template parameter.
+
+
+=== Using annotated pointer with streams
+
+The `annotated_ptr` is added to the list of supported operand types for the
+`stream` class stream operators, with the equivalent effects as is specified
+for `multi_ptr`.
+
+
+== Implementation notes
+
+The implementation of `annotated_ptr` with the `address_space` property is
+expected to be very similar to the existing implementation of `multi_ptr`.
+
+
+== Issues
+
+. Should having the `address_space` property on the `annotated_ptr` restrict
+the conversion and assignment operators available to `annotated_ptr`.
++
+--
+*UNRESOLVED*: It is expected that as with the `multi_ptr` class certain
+conversion and assignment operators, particulary those between `annotated_ptr`
+obejcts of different `address_space` property values may not be convertible.
+--
+
+. Should having the `address_space` property on the `annotated_ptr` restrict
+constructors for `annotated_ptr`?
++
+--
+*UNRESOLVED*: It is expected that as with the `multi_ptr` the constructor which
+takes a decorated pointer may be restricted to the an `annotated_ptr` with the
+appropriate `address_space` property value.
+--
