@@ -34,6 +34,12 @@ To report problems with this extension, please open a new issue at:
 https://github.com/intel/llvm/issues
 
 
+== Contributors
+
+Gordon Brown, Codeplay +
+Victor Lomüller, Codeplay +
+
+
 == Dependencies
 
 This extension is written against the SYCL 2020 revision 8 specification.  All
@@ -46,6 +52,8 @@ This extension also depends on the following other SYCL extensions:
   sycl_ext_oneapi_annotated_ptr]
 * link:../experimental/sycl_ext_oneapi_properties.asciidoc[
   sycl_ext_oneapi_properties]
+* link:proposed/sycl_ext_oneapi_address_cast.asciidoc[
+  sycl_ext_oneapi_address_cast]
 
 
 == Status
@@ -65,27 +73,78 @@ This extension is not yet implemented.
 
 The `multi_ptr` class is used to associate an address space with a pointer and
 have that represented as a C++ type. This allows allows users infer the address
-space of memory a pointer is adressing and allows functions to be overloaded or
-classes to be specialised on the address space of a pointer, without relying on
-implementation details.
+space of the memory a pointer is adressing and allows functions to be overloaded
+or classes to be specialised based on the address space of a pointer, for
+example having a pointer as a member variable, without exposing implementation
+details.
 
-The `multi_ptr` class has an `access::decorated` template parameter for
-specifying whether the underlying pointer retrieved from it will be decorated
-with the address space or not. In the SYCL 2020 specification this template
-parameter is defaulted to `access::decorated::legacy` which assumes the
-behaviour from SYCL 1.2.1. However, this introduces a problem as moving forward
-this default cannot be changed without an API break, and potentially an ABI
-break in implementations.
+In SYCL 2020 the concept of address space decoration was added, which is where
+the raw pointer has an explicit address space decoration attached. This provides
+the compiler more information aabout a raw pointer's address space so provides
+certain capabilities, however, it comes at a cost as it subtly changes the type
+of the pointer, potentially causing unexpected compiler errors or breaking C++
+type traits.
+
+There are a few use cases which were identified where the user may wish to use
+this:
+
+* If the compiler for some reason isn't able to inline code, it may be unable
+to determine a pointer's address space through inference, leaving a pointer as
+generic, which can lead to a performance impact, so having the decorated pointer
+explicitly states the address space, therefore avoiding this.
+* If the application is interoperating with backend-specific functions which
+take a pointer with a specific address space, so having the decorated pointer
+allows the application to call these functions.
+* If a pointer is contained within a struct which points to USM memory, and this
+pointer is caltured in a kernel, this pointer will be in the generic address
+space by default, but will point to global memory, so having the decorated
+pointer would allow the compiler to know it's pointing to global memory,
+avoiding any runtime checks or casts.
+
+In SYCL 2020 decorated pointers are exposed via an additional template parameter
+to the `multi_ptr` class; `access::decorated`. The decoration of a `multi_ptr`
+can be either yes, no or legacy, where legacy assumes the behaviour of
+SYCL 1.2.1. The decoration does not modify the pointer within `multi_ptr` object
+itself, instead it alters the behaviour of the conversion operator and
+`multi_ptr::get` member functions.
+
+[cols="5,5,5,5,5"]
+|===
+| `access::decorated` | `operator pointer` | `get()` |`get_decorated()` | `get_raw()`
+
+| `legacy` | decorated | raw | decorated | raw
+
+| `yes` | decorated | decorated | decorated | raw
+
+| `no` | raw | raw | decorated | raw
+|===
+
+In SYCL 2020 the `access::decorated` is defaulted to `legacy`. It was intended
+that in SYCL Next the default would change, however, this would not be possible
+without a significant API, and potential ABI breaks in implementations.
+
+As changing the default of `access::decorated` would cause an API or ABI break
+this extension introduces an alternative interface for exposing decorated
+pointers.
+
+This extension takes a different approach to that of SYCL 2020, as the use cases
+of decorated pointers are non-typical and it can introduce complications to an
+application, it should be considered an advanced feature, and therefore opted
+into explicitly by the user.
 
 This extension introduces an alternative interface to that which is currently
 provided by the `multi_ptr` class. The new interfaces consist of a compile-time
-property for the `annotated_ptr` class which adds an address-space qualifier to
-the underlying pointer type as well as a free function which takes an
-`annotated_ptr` and returns a decorated raw pointer.
+property for the `annotated_ptr` class which adds allows the user to specify the
+address space qualifier for the underlying pointer. When using this property
+the `annotated_ptr` asserts that the pointer is to a specific address space.
 
-This extension also introduces new overlaods to functions and member functions
-which currently take a `multi_ptr` to instead take the equivalent
-`annotated_ptr`.
+This extension also introduces a free function which takes an `annotated_ptr`
+and returns a decorated raw pointer.
+
+Finally this extension introduces new overlaods to functions and member
+functions which currently take a `multi_ptr` to instead take the equivalent
+`annotated_ptr` with address space property.
+
 
 == Specification
 
@@ -122,12 +181,12 @@ namespace sycl::ext::oneapi::experimental {
 
   struct address_space_key {
     template<int K>
-    using value_t = property_value<foo,
+    using value_t = property_value<address_space_key,
       std::integral_constant<access::address_space, K>>;
   };
 
   template<int K>
-  inline constexpr address_space::value_t<K> address_space;
+  inline constexpr address_space_key::value_t<K> address_space;
 
   template<>
   struct is_property_key<address_space_key> : std::true_type {};
@@ -145,18 +204,35 @@ The value of the `address_space` property is a value of the enum class
 
 === Clarification to the annotated pointers & references
 
-When an `annotated_ptr` or `annotated_ref` has the `address_space` property the 
-underlying pointer or reference must be to memory in the address space
-specified by the value of the property.
+When an `annotated_ptr` or `annotated_ref` has the `address_space` property it
+will assert that the underlying pointer or reference addresses memory in the
+address space specified by the value of the property.
 
 When an `annotated_ptr` or `annotated_ref` does not have the `address_space`
-property the underlying pointer or reference must be to memory in the generic
-address space.
+property it will assert that the underlying pointer or reference addresses
+memory in the generic address space.
+
+When an `annotated_ptr` with an `address_space` property is constructed, it is a
+pre-condition that the pointer or reference argument points to the address space
+specified by the `address_space` property.
+
+The compiler and runtime implementation of `annotated_ptr` or `annotated_ref`
+can assume the above is true for the purposes of optmization.
 
 When an `annotated_ptr` or `annotated_ref` has the `address_space` property
 any member functions, including special member functions, which return either
 an `annotated_ptr` or `annotated_ref` must return an instance which also has
 the same `address_space` property.
+
+
+=== Backwards portability with multi_ptr
+
+As a temporary measure until `multi_ptr` is deprecated, this extension
+introduces conversions from an `multi_ptr` of any decoration to an
+`annotated_ptr` of the same address space qualifier and from an `annotated_ptr`
+to a `multi_ptr` of `access::decorated::legacy` and the same address space.
+
+These should be deprecated if and when the `multi_ptr` is deprecated.
 
 
 === Retrieving a decorated pointer
@@ -198,7 +274,7 @@ class accessor {
 
   annotated_ptr<value_type,
     properties<address_space<access::adress_space::global_space>>>
-  ext_oneapi_get_multi_ptr() const noexcept;
+  ext_oneapi_get_annotated_ptr() const noexcept;
 
 }; // accessor
 ----
@@ -214,13 +290,90 @@ class local_accessor {
 
   annotated_ptr<value_type,
     properties<address_space<access::adress_space::local_space>>>
-  ext_oneapi_get_multi_ptr() const noexcept;
+  ext_oneapi_get_annotated_ptr() const noexcept;
 
 }; // local_accessor
 ----
 
 _Returns_: An `annotated_ptr` with the `address_space` property of value
 `access::address_space::local_space`.
+
+
+=== Replacement address_cast overloads
+
+New overloads of the `static_address_cast` and `dynamic_address_cast` interfaces
+are introduced with `annotated_ptr` instead of `multi_ptr`, however, as some of
+these functions would take the same parameters and have a different return type,
+these new functions must replace the current proposed functions.
+
+[source,c++]
+----
+template <typename ElementType, typename Properties>
+annotated_ptr<ElementType, Properties> static_address_cast(ElementType* ptr);
+----
+
+_Constraints_: Only available when `Properties` contains the `address_space`
+property.
+
+_Preconditions_: `ptr` points to memory in the address space specified by the
+value of the `address_space` property.
+
+_Returns_: An `annotated_ptr` with the address space property provided in
+`Properties`, that points to the same memory address as `ptr`.
+
+[source,c++]
+----
+template <typename ElementType, typename SrcProperties, typename DestProperties>
+annotated_ptr<ElementType, DestProperties> static_address_cast(
+  annotated_ptr<ElementType, SrcProperties> ptr);
+----
+
+_Constraints_: Only available when `SrcProperties`` and `DestProperties` both
+contain the `address_space` property and the value of the `address_space`
+property in `SrcProperties` is `address_space::genric_space`.
+
+_Preconditions_: `ptr` points to memory in the address space specified by the
+value of the `address_space` property in `DestProperties`.
+
+_Returns_: An `annotated_ptr` with the address space property provided in
+`DestProperties`, that points to the same memory address as `ptr`.
+
+
+[source,c++]
+----
+template <typename ElementType, typename Properties>
+annotated_ptr<ElementType, Properties> dynamioc_address_cast(ElementType* ptr);
+----
+
+_Constraints_: Only available when `Properties` contains the `address_space`
+property.
+
+_Preconditions_: The memory pointer to by `ptr`` is accessible to the calling
+work-item.
+
+_Returns_: An `annotated_ptr` with the address space property provided in
+`DestProperties`, that addresses the same memory address as `ptr`, if `ptr`
+points to memory in the address space specified by the value of the,
+`address_space` property, and `nullptr` otherwise.
+
+[source,c++]
+----
+template <typename ElementType, typename SrcProperties, typename DestProperties>
+annotated_ptr<ElementType, DestProperties> dynamic_address_cast(
+  annotated_ptr<ElementType, SrcProperties> ptr);
+----
+
+_Constraints_: Only available when `SrcProperties`` and `DestProperties` both
+contain the `address_space` property and the value of the `address_space`
+property in `SrcProperties` is `address_space::genric_space`.
+
+_Preconditions_: The memory pointer to by `ptr`` is accessible to the calling
+work-item.
+
+_Returns_: An `annotated_ptr` with the address space property provided in
+`DestProperties`, that addresses the same memory address as `ptr`, if `ptr`
+points to memory in the address space specified by the value of the,
+`address_space` property, and `nullptr` otherwise.
 
 
 === New function overloads
@@ -303,13 +456,23 @@ expected to be very similar to the existing implementation of `multi_ptr`.
 
 == Issues
 
-. Should having the `address_space` property on the `annotated_ptr` restrict
-the conversion and assignment operators available to `annotated_ptr`.
+. Should the `annotated_ptr` or `annotated_ref` constructors perform an address
+space check as is done in `dynamic_address_cast`.
 +
 --
-*UNRESOLVED*: It is expected that as with the `multi_ptr` class certain
-conversion and assignment operators, particulary those between `annotated_ptr`
-obejcts of different `address_space` property values may not be convertible.
+*UNRESOLVED*: Currently this extension states that an `annotated_ptr`
+constructor will not perform an address space check, as it was believed that the
+constructor is simply constructing an object, rather than explicitly performing
+an address space cast, and this would introduce overhead. Furthermore, it's
+believed that we should encourage users to use an explicit
+`dynamic_address_cast` if they need to perform an address space check. If we
+were to change this behaviour there are other options:
+
+* The constructors could perform an address space check.
+* We could add an parameter which allows users to specify whether they would
+like to perform an address space check.
+* We could remove the `annotated_ptr` constructor, only allowing
+`static_address_cast` or `dynamic_address_cast` to create an `annotated_ptr`.
 --
 
 . Should having the `address_space` property on the `annotated_ptr` restrict
@@ -319,4 +482,24 @@ constructors for `annotated_ptr`?
 *UNRESOLVED*: It is expected that as with the `multi_ptr` the constructor which
 takes a decorated pointer may be restricted to the an `annotated_ptr` with the
 appropriate `address_space` property value.
+--
+
+. Should `annotated_ptr` provide a way to expose pointers to memory in a
+constant address space?
++
+--
+*UNRESOLVED*: Currently this extension does not include the
+`address_space::constant_space` address space as this is deprecated in SYCL
+2020, however, there may be platfroms which would benefit from being able to
+express pointers to a constant address space, so we should consider whether to
+expose this in `annotated_ptr` in some way.
+--
+
+. Conversions between `annotated_ptr` and `multi_ptr` need to be defined.
+
++
+--
+*UNRESOLVED*: Currently the extension states that there will be temporary
+conversions between `annotated_ptr` and `multi_ptr` to assist with transition.
+Definitions need to be added to the extension to describe these in more detail.
 --
