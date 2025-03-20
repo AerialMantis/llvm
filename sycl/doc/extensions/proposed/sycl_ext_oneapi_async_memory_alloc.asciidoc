@@ -345,6 +345,12 @@ A memory pool has a number of attributes which dictate it's behavior:
   which is reserved by the pool from the memory provider.
 * A memory pool has a *used size* (in bytes) which tracks the total memory which
   allocated has been allocated to a USM pointer.
+* A memory pool has a *reserved size high* (in bytes) which tracks a watermark
+  value, which is the highest the reserve size has been since the memory pool
+  was created or the value was last reset.
+* A memory pool has a *used size high* (in bytes) which tracks a watermark
+  value, which is the highest the used size has been since the memory pool
+  was created or the value was last reset.
 * A memory pool has a *allocation kind* which is a value of `usm::alloc` which
   dictates the type of USM memory that is allocated to the pool.
 * A memory pool is associated with a context and one or more device(s),
@@ -416,7 +422,15 @@ class memory_pool {
 
   size_t get_reserved_size_current() const;
 
+  size_t get_reserved_size_high() const;
+
   size_t get_used_size_current() const;
+
+  size_t get_used_size_high() const;
+
+  void reset_reserved_size_high();
+
+  void reset_used_size_high();
 
   void increase_threshold_to(size_t newThreshold);
 
@@ -538,16 +552,48 @@ _Returns_: The deallocation threshold of the memory pool.
 size_t get_reserved_size_current() const;
 ----
 
-_Returns_: The total memory allocated to the pool at the point the function is
-called.
+_Returns_: The current reserved memory for the pool.
+
+[source, c++]
+----
+size_t get_reserved_size_high() const;
+----
+
+_Returns_: The watermark value for the highest the reserved memory has been
+since the memory pool was created or since it was last reset, at the point the
+function is called.
 
 [source, c++]
 ----
 size_t get_used_size_current() const;
 ----
 
-_Returns_: The total memory which has been allocated to USM pointers by the pool
-at the point the function is called.
+_Returns_: The current used memory for the pool.
+
+[source, c++]
+----
+size_t get_used_size_high() const;
+----
+
+_Returns_: The watermark value for the highest the used memory has been since
+the memory pool was created or since it was last reset, at the point the
+function is called.
+
+[source, c++]
+----
+void reset_reserved_size_high();
+----
+
+_Effects_: Resets the watermark value for the highest the reserved memory has
+been to zero.
+
+[source, c++]
+----
+void reset_used_size_high();
+----
+
+_Effects_: Resets the watermark value for the highest the used memory has
+been to zero.
 
 [source, c++]
 ----
