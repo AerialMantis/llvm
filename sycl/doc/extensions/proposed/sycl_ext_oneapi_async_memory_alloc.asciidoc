@@ -585,7 +585,7 @@ void reset_reserved_size_high();
 ----
 
 _Effects_: Resets the watermark value for the highest the reserved memory has
-been to zero.
+been to the current reserved size.
 
 [source, c++]
 ----
@@ -593,7 +593,7 @@ void reset_used_size_high();
 ----
 
 _Effects_: Resets the watermark value for the highest the used memory has
-been to zero.
+been to the current used size.
 
 [source, c++]
 ----
